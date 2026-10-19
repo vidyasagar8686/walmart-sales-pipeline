@@ -1,0 +1,4 @@
+file_type,expected_header,is_active
+stores,"Store,Type,Size",true
+department,"Store,Dept,Date,Weekly_Sales,IsHoliday",true
+fact,"Store,Date,Temperature,Fuel_Price,MarkDown1,MarkDown2,MarkDown3,MarkDown4,MarkDown5,CPI,Unemployment,IsHoliday",true

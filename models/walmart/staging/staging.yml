@@ -1,0 +1,46 @@
+version: 2
+
+sources:
+  - name: walmart_raw
+    database: WALMART
+    schema: RAW 
+    tables:
+      - name: stores 
+      - name: department 
+      - name: fact 
+
+models:
+  - name: stg_stores
+    columns:
+      - name: store_id
+        tests:
+          - not_null
+          - unique
+
+  - name: stg_department
+    columns:
+      - name: store_id
+        tests:
+          - not_null
+
+      - name: dep_id
+        tests:
+          - not_null
+
+      - name: sales_date
+        tests:
+          - not_null
+
+      - name: weekly_sales
+        tests:
+          - not_null
+
+  - name: stg_fact
+    columns:
+      - name: store_id
+        tests:
+          - not_null
+
+      - name: sales_date
+        tests:
+          - not_null
