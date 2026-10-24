@@ -80,7 +80,10 @@ CREATE TABLE IF NOT EXISTS WALMART.RAW.DEPARTMENT (
     DEPT         VARCHAR,
     DATE         VARCHAR,
     WEEKLY_SALES VARCHAR,
-    ISHOLIDAY    VARCHAR
+    ISHOLIDAY    VARCHAR,
+    FILE_NAME       VARCHAR,        -- lineage: which file
+    LOADED_AT       TIMESTAMP_LTZ,  -- lineage: when
+    FILE_ROW_NUMBER NUMBER          -- lineage: which line in the file
 );
 
 CREATE TABLE IF NOT EXISTS WALMART.RAW.FACT (
@@ -95,7 +98,10 @@ CREATE TABLE IF NOT EXISTS WALMART.RAW.FACT (
     MARKDOWN5    VARCHAR,
     CPI          VARCHAR,
     UNEMPLOYMENT VARCHAR,
-    ISHOLIDAY    VARCHAR
+    ISHOLIDAY    VARCHAR,
+    FILE_NAME       VARCHAR,        -- lineage: which file
+    LOADED_AT       TIMESTAMP_LTZ,  -- lineage: when
+    FILE_ROW_NUMBER NUMBER          -- lineage: which line in the file
 );
 
 
@@ -111,17 +117,17 @@ FROM (
 PATTERN = '.*stores.*[.]csv';
 
 CREATE OR REPLACE PIPE WALMART.RAW.DEPARTMENT_PIPE AUTO_INGEST = TRUE AS
-COPY INTO WALMART.RAW.DEPARTMENT
+COPY INTO WALMART.RAW.DEPARTMENT (STORE, DEPT, DATE, WEEKLY_SALES, ISHOLIDAY, FILE_NAME, LOADED_AT, FILE_ROW_NUMBER)
 FROM (
-    SELECT $1, $2, $3, $4, $5
+    SELECT $1, $2, $3, $4, $5, METADATA$FILENAME, METADATA$START_SCAN_TIME, METADATA$FILE_ROW_NUMBER
     FROM @WALMART.RAW.WALMART_S3_STAGE
 )
 PATTERN = '.*department.*[.]csv';
 
 CREATE OR REPLACE PIPE WALMART.RAW.FACT_PIPE AUTO_INGEST = TRUE AS
-COPY INTO WALMART.RAW.FACT
+COPY INTO WALMART.RAW.FACT (STORE, DATE, TEMPERATURE, FUEL_PRICE, MARKDOWN1, MARKDOWN2, MARKDOWN3, MARKDOWN4, MARKDOWN5, CPI, UNEMPLOYMENT, ISHOLIDAY, FILE_NAME, LOADED_AT, FILE_ROW_NUMBER)
 FROM (
-    SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+    SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, METADATA$FILENAME, METADATA$START_SCAN_TIME, METADATA$FILE_ROW_NUMBER
     FROM @WALMART.RAW.WALMART_S3_STAGE
 )
 PATTERN = '.*fact.*[.]csv';
@@ -142,5 +148,24 @@ ALTER PIPE WALMART.RAW.FACT_PIPE       REFRESH;
 SELECT SYSTEM$PIPE_STATUS('WALMART.RAW.STORES_PIPE');   -- executionState = RUNNING
 
 SELECT COUNT(*) AS stores_rows     FROM WALMART.RAW.STORES;      -- 45
-SELECT COUNT(*) AS department_rows FROM WALMART.RAW.DEPARTMENT;  -- 421,570
+SELECT COUNT(*) AS department_rows FROM WALMART.RAW.DEPARTMENT;  -- 421,570 for the original department.csv
 SELECT COUNT(*) AS fact_rows       FROM WALMART.RAW.FACT;        -- 8,190
+
+
+-- ---------------------------------------------------------------------
+-- 8. Runbook: changing a pipe or a RAW table
+-- Recreating a pipe RESETS its load history, so a file can load twice.
+-- Run each statement on its own and check the result before the next.
+-- ---------------------------------------------------------------------
+-- 1. Pause the pipe (the ingestion gate then blocks the dbt job)
+--    ALTER PIPE WALMART.RAW.DEPARTMENT_PIPE SET PIPE_EXECUTION_PAUSED = TRUE;
+-- 2. Back up the table
+--    CREATE TABLE WALMART.RAW.DEPARTMENT_BACKUP CLONE WALMART.RAW.DEPARTMENT;
+-- 3. Change the table / recreate the pipe with the new COPY column list
+-- 4. Reload from S3 (TRUNCATE also clears the table's load history)
+--    TRUNCATE TABLE WALMART.RAW.DEPARTMENT;
+--    COPY INTO WALMART.RAW.DEPARTMENT (...) FROM (SELECT ...) PATTERN = '.*department.*[.]csv';
+-- 5. Reconcile the COPY result per file with the files in S3,
+--    and run: dbt test --select assert_no_duplicate_file_loads assert_file_names_follow_convention
+-- 6. SHOW PIPES (same notification_channel?), resume the pipe, run the job
+--    ALTER PIPE WALMART.RAW.DEPARTMENT_PIPE SET PIPE_EXECUTION_PAUSED = FALSE;

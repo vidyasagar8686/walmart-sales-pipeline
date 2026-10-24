@@ -1,4 +1,4 @@
-file_type,expected_header,is_active
-stores,"Store,Type,Size",true
-department,"Store,Dept,Date,Weekly_Sales,IsHoliday",true
-fact,"Store,Date,Temperature,Fuel_Price,MarkDown1,MarkDown2,MarkDown3,MarkDown4,MarkDown5,CPI,Unemployment,IsHoliday",true
+file_type,contract_version,expected_header,valid_from,valid_to,change_note
+stores,1,"Store,Type,Size",2026-01-01,,Initial contract
+department,1,"Store,Dept,Date,Weekly_Sales,IsHoliday",2026-01-01,,Initial contract
+fact,1,"Store,Date,Temperature,Fuel_Price,MarkDown1,MarkDown2,MarkDown3,MarkDown4,MarkDown5,CPI,Unemployment,IsHoliday",2026-01-01,,Initial contract

@@ -3,11 +3,18 @@ version: 2
 sources:
   - name: walmart_raw
     database: WALMART
-    schema: RAW 
+    schema: RAW
+    config:
+      loaded_at_field: loaded_at
+      freshness:
+        warn_after: {count: 8, period: day}
+        error_after: {count: 15, period: day}
     tables:
-      - name: stores 
-      - name: department 
-      - name: fact 
+      - name: stores
+        config:
+          freshness: null   # master data, sent only when a store changes
+      - name: department
+      - name: fact
 
 models:
   - name: stg_stores

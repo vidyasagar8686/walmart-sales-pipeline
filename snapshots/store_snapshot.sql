@@ -2,8 +2,8 @@
 
 {{
     config(
-        target_database='WALMART',
-        target_schema='MART',
+        database='WALMART',
+        schema='MART',
         unique_key='store_id',
         strategy='check',
         check_cols=['store_type', 'store_size']

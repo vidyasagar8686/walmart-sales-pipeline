@@ -3,7 +3,7 @@ with
 source as (
 
     select * from {{ ref('department_checked') }}
-    WHERE error_reason IS NULL
+    WHERE row_status = 'CLEAN'
 
 ),
 
