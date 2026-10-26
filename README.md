@@ -15,14 +15,15 @@ AWS S3 (raw/) ─► Snowpipe (auto-ingest) ─► BRONZE: RAW (all text + file 
                                                  │
         1. Ingestion gate     – pipes running, nothing pending or queued
         2. Source freshness   – weekly feeds loaded within 8 / 15 days
-        3. Load integrity     – no file loaded twice, every row has lineage, file names follow the rule
+        3. Load integrity     – no file loaded twice, every row has lineage, file names follow the rule,
+                                every file in RAW matches S3 (row count + content fingerprint)
         4. Schema gate        – every file's header = contract version valid when it arrived
         5. Snapshot           – SCD Type 2 store history
         6. Build + tests      – Silver → Gold, reconciliation
                                                  │
             SILVER: STAGING (checked rows, newest file wins per key) ──► QUARANTINE (bad rows + history)
                                                  │
-            GOLD: MART (fact_sales, store_dim, store_snapshot, date_dim) ──► Tableau
+            GOLD: MART (fact_sales, store_dim, dim_store_history, date_dim) ──► Tableau
                          any failure → job stops → email; open quarantine rows → warning email
 ```
 
@@ -30,7 +31,7 @@ AWS S3 (raw/) ─► Snowpipe (auto-ingest) ─► BRONZE: RAW (all text + file 
 
 | Layer | Tool |
 |---|---|
-| Storage | AWS S3 (`de-walmart-bucket`, folder `raw/`) |
+| Storage | AWS S3 (`de-walmart-bucket`, folder `raw/`, versioning on) |
 | Security | AWS IAM role (read-only on `raw/`) + Snowflake storage integration (no stored keys) |
 | Warehouse | Snowflake (X-Small, auto-suspend 60 s) |
 | Ingestion | Snowpipe (3 auto-ingest pipes sharing one SQS notification channel) |
@@ -64,10 +65,13 @@ Later files follow the naming rule `<feed>_<YYYYMMDD>_<n>.csv` (for example `dep
 
 | Table | Type | Key | Highlights |
 |---|---|---|---|
-| `FACT_SALES` | Fact | store_id + dep_id + sales_date | weekly_sales, positive_sales, net_return_amount, economic features |
-| `STORE_DIM` | Dimension (SCD1) | store_id | store_type, store_size, store_size_category |
+| `FACT_SALES` | Fact | store_id + dep_id + sales_date | store_version_key, weekly_sales, positive_sales, net_return_amount, economic features |
+| `STORE_DIM` | Dimension (SCD1, as-is) | store_id | Current store_type, store_size, store_size_category |
+| `DIM_STORE_HISTORY` | Dimension (SCD2, as-was) | store_version_key | One row per store version: type, size, category, valid_from, valid_to, is_current |
 | `DATE_DIM` | Dimension | sales_date | is_holiday |
-| `STORE_SNAPSHOT` | SCD2 history | store_id + validity dates | Tracks changes to store type and size |
+| `STORE_SNAPSHOT` | dbt snapshot | dbt_scd_id | Records changes to store type and size; source of DIM_STORE_HISTORY |
+
+**As-is vs as-was:** `fact_sales.store_version_key` comes from a point-in-time join (`store_id`, and `sales_date >= valid_from AND sales_date < valid_to`). Join on `store_id` to `STORE_DIM` for today's values, or on `store_version_key` to `DIM_STORE_HISTORY` for the values that were valid on the sales date.
 
 ## Repository structure
 
@@ -79,7 +83,7 @@ Later files follow the naming rule `<feed>_<YYYYMMDD>_<n>.csv` (for example `dep
 │   └── generate_schema_name.sql     # prod: real schema names; dev: DBT_DEV_<schema>
 ├── models/walmart/
 │   ├── staging/                     # sources (+ freshness), *_checked (rules + row status), stg_* views
-│   ├── marts/                       # store_dim, date_dim, fact_sales + tests (marts.yml)
+│   ├── marts/                       # store_dim, dim_store_history, date_dim, fact_sales + tests (marts.yml)
 │   └── quarantine/                  # quarantine_department, quarantine_fact
 ├── seeds/walmart/
 │   ├── file_header_contract.csv     # versioned expected header per file type
@@ -91,6 +95,7 @@ Later files follow the naming rule `<feed>_<YYYYMMDD>_<n>.csv` (for example `dep
     ├── assert_no_duplicate_file_loads.sql       # no double loads, no row without lineage
     ├── assert_file_names_follow_convention.sql  # naming rule, catches files pipes would ignore
     ├── assert_file_headers_match_contract.sql   # schema gate (versioned contract)
+    ├── assert_raw_matches_s3.sql                # every file: S3 vs RAW row count + content (HASH_AGG)
     ├── assert_sales_rowcount_reconciles.sql     # department: Bronze = Silver + Quarantine + superseded; Gold = Silver
     ├── assert_fact_rowcount_reconciles.sql      # fact: Bronze = Silver + Quarantine + superseded
     ├── assert_fact_sales_grain_unique.sql       # one row per store, department and week
@@ -104,7 +109,7 @@ Later files follow the naming rule `<feed>_<YYYYMMDD>_<n>.csv` (for example `dep
 |---|---|---|
 | 1 | `dbt test --select assert_snowpipe_ingestion_complete` | **Gate:** stop if loading isn't finished |
 | 2 | `dbt source freshness` | **Gate:** stop if a weekly feed is 15+ days late |
-| 3 | `dbt test --select assert_no_duplicate_file_loads assert_file_names_follow_convention` | **Gate:** Bronze integrity |
+| 3 | `dbt test --select assert_no_duplicate_file_loads assert_file_names_follow_convention assert_raw_matches_s3` | **Gate:** Bronze integrity, and RAW matches S3 |
 | 4 | `dbt seed --select file_header_contract quarantine_resolutions` | Refresh the contract and the resolutions |
 | 5 | `dbt test --select assert_file_headers_match_contract` | **Gate:** stop if a file's structure changed |
 | 6 | `dbt snapshot --select store_snapshot` | Record store history (SCD2) |
@@ -139,9 +144,25 @@ Email alerts are on for **Fails** and **Warns**. A full run takes under a minute
 - Silver keeps the **newest file's row per key** (file name carries the extract date and sequence).
 - `assert_no_duplicate_file_loads` fails the job if any file was loaded twice (recreating a pipe resets its load history) or any row has no lineage.
 - `assert_file_names_follow_convention` enforces the naming rule the ordering relies on.
-- Row-count tests prove every Bronze row is clean, quarantined or superseded, exactly once (today: 421,585 = 421,581 + 4 + 0 for department; 8,193 = 8,193 + 0 + 0 for fact).
+- Row-count tests prove every Bronze row is clean, quarantined or superseded, exactly once (today: 421,596 = 421,589 + 5 + 2 for department; 8,198 = 8,198 + 0 + 0 for fact).
 
-## Scenario 4: Business enhancements
+## Scenario 4: A file overwritten in S3
+
+**Problem:** a file edited and uploaded again under the same name replaces the original in S3. Snowpipe doesn't reload a file name it already loaded, so RAW keeps the old values, and with versioning off the original is lost. This happened to `stores.csv` during testing.
+
+**Solution:** S3 **versioning** on the bucket, and `assert_raw_matches_s3`, which compares every file in S3 with RAW on every run, by **row count and a content fingerprint** (`HASH_AGG` over the data columns). Recovery is non-destructive: upload the earlier version again (runbook in `snowflake_setup.sql`).
+
+**Tested:** a one-row file loaded (44210.65) → overwritten in S3 with 44210.66 → RAW still 44210.65, no error from Snowpipe → test failed with `CONTENT` (1 row in S3, 1 in RAW) → earlier version uploaded again → job green.
+
+## Scenario 5: As-is vs as-was store reporting
+
+**Problem:** `store_dim` holds current values only, so if a store changes, all its past sales show the new type and size.
+
+**Solution:** `dim_store_history` (one row per store version from the snapshot) and `store_version_key` on `fact_sales` from a point-in-time join. Tests: unique / not_null key, and a relationships test from every sale to a version.
+
+**Verified:** all 421,589 sales rows have a version. Store 1 has three versions; its 10,253 sales ($222,640,283.53) show type A through `store_dim` (as-is) and type B through `dim_store_history` (as-was).
+
+## Scenario 6: Business enhancements
 
 | Request | Change | Validation |
 |---|---|---|
@@ -167,6 +188,7 @@ Each change followed the same process: **understand → profile → preview → 
 - **Fail the job for structure problems, quarantine for bad rows:** good data keeps flowing.
 - **Fix data at the source:** a correction is a new file, never a manual delete.
 - **Recreating a pipe resets its load history:** follow the runbook in `snowflake_setup.sql`.
+- **Snowpipe never reloads an overwritten file:** keep S3 versioning on and compare content, not just row counts.
 - **Profile before building, reconcile after building**, and turn manual checks into tests.
 - **Load before transform:** the job checks that loading is finished instead of trusting timing.
 
@@ -187,4 +209,5 @@ Each change followed the same process: **understand → profile → preview → 
 - CI job on pull requests (`dbt build --select state:modified+`)
 - Trigger the job automatically when files land (dbt Cloud API)
 - Effective dates from the source for back-dated store changes
+- Least-privilege Snowflake roles (loader, transformer, reporter) instead of ACCOUNTADMIN
 - Manifest per load (expected files and row counts)

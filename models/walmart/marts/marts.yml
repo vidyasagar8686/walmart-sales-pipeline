@@ -14,6 +14,19 @@ models:
           - accepted_values:
               arguments: {values: ['Small', 'Medium', 'Large', 'Unknown']}
 
+  - name: dim_store_history
+    columns:
+      - name: store_version_key
+        tests:
+          - not_null
+          - unique
+
+      - name: store_size_category
+        tests:
+          - not_null
+          - accepted_values:
+              arguments: {values: ['Small', 'Medium', 'Large', 'Unknown']}
+
   - name: date_dim
     columns:
       - name: sales_date
@@ -30,6 +43,14 @@ models:
               arguments:
                 to: ref('store_dim')
                 field: store_id
+
+      - name: store_version_key
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_store_history')
+                field: store_version_key
 
       - name: dep_id
         tests:
@@ -52,4 +73,4 @@ models:
           - not_null 
       - name: net_return_amount
         tests:
-          - not_null 
+          - not_null

@@ -166,6 +166,24 @@ SELECT COUNT(*) AS fact_rows       FROM WALMART.RAW.FACT;        -- 8,190
 --    TRUNCATE TABLE WALMART.RAW.DEPARTMENT;
 --    COPY INTO WALMART.RAW.DEPARTMENT (...) FROM (SELECT ...) PATTERN = '.*department.*[.]csv';
 -- 5. Reconcile the COPY result per file with the files in S3,
---    and run: dbt test --select assert_no_duplicate_file_loads assert_file_names_follow_convention
+--    and run: dbt test --select assert_no_duplicate_file_loads assert_file_names_follow_convention assert_raw_matches_s3
 -- 6. SHOW PIPES (same notification_channel?), resume the pipe, run the job
 --    ALTER PIPE WALMART.RAW.DEPARTMENT_PIPE SET PIPE_EXECUTION_PAUSED = FALSE;
+
+-- =====================================================================
+-- RUNBOOK: a file overwritten in S3 (assert_raw_matches_s3 fails with CONTENT)
+-- Prerequisite: S3 Bucket Versioning = Enabled on the bucket.
+-- Snowpipe does not reload a file name it has already loaded, so RAW keeps the old content.
+-- 1. The job has stopped at step 3; Silver and Gold keep the last good data.
+-- 2. In S3, turn on "Show versions" for the file; compare the versions with RAW.
+-- 3. Old content correct: download the earlier version and upload it again under the same
+--    name (it becomes a new current version; the bad version stays in history).
+--    Never delete versions by hand.
+-- 4. New content correct: restore the original as in step 3 and ask the source to send the
+--    change as a new file (<feed>_<YYYYMMDD>_<n>.csv); newest file wins in Silver.
+-- 5. Rerun the job; it must be green.
+-- Check what S3 holds for one file:
+--   SELECT metadata$filename, $4, metadata$file_last_modified
+--   FROM @WALMART.RAW.WALMART_S3_STAGE
+--     (file_format => 'WALMART.RAW.CSV_FORMAT', pattern => '.*<file name>.*');
+-- =====================================================================
